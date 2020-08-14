@@ -1,0 +1,875 @@
+---
+title: "Analyses"
+author: "Vera Weisbecker"
+date: "27 February 2018"
+output: html_document
+---
+
+
+
+## load required packages 
+
+```{r }
+library(ape)
+library(geiger)
+library(phytools)
+library(caper)
+library(car)
+library(multcomp)
+library(geomorph)
+library(nlme)
+library(dplyr)
+library(RColorBrewer)
+library(surface)
+library(phia)
+library(DescTools)
+library(scales)
+
+```
+
+#Read in data and utilities code
+
+```{r}
+
+#the "utilities" file contains functions so this analysis page isn't too cluttered
+source("../Analyses/Utilities.r")
+load(file = "../Data/Processed_Data_for_Pgls.rda")
+data_raw=read.csv("../Data/raw_data.csv", header=TRUE)
+mean_range_data = read.csv("../Data/means_test_dataset.csv", header=TRUE)
+
+```
+
+
+#First, some basic data on the quality of the raw dataset: How many percent of the dataset entries are there for each of the entry types?
+
+```{r}
+
+
+DataQuality=as.data.frame(sapply(data_raw[,2:28], function(x) sum((!is.na(x))/nrow(data_raw))*100))
+colnames(DataQuality)=c ("% in raw dataset")
+
+range_but_no_av_bl <-length(which (is.na (data_raw$Bl_mm) == TRUE & is.na (data_raw$Bl_min)==FALSE))
+range_but_no_av_MF_bl <- length(which (is.na (data_raw$Bl_Av_F) == TRUE & is.na (data_raw$Bl_min_F)==FALSE)) #assuming where there's a female range, theres also a male range
+range_but_no_av_Tl <-length(which (is.na (data_raw$Tl_mm) == TRUE & is.na (data_raw$Tl_min)==FALSE))
+range_but_no_av_MF_Tl <- length(which (is.na (data_raw$Tl_Av_F) == TRUE & is.na (data_raw$Tl_min_F)==FALSE)) #assuming where there's a female range, theres also 
+
+range_but_no_av_Wt <-length(which (is.na (data_raw$Wt_g) == TRUE & is.na (data_raw$Wt_min)==FALSE))
+range_but_no_av_MF_Wt <- length(which (is.na (data_raw$Wt_Av_F) == TRUE & is.na (data_raw$Wt_min_F)==FALSE)) #assuming where there's a female range, theres also 
+
+extra <- rbind(range_but_no_av_bl,range_but_no_av_MF_bl,range_but_no_av_Tl,range_but_no_av_MF_Tl,range_but_no_av_Wt,range_but_no_av_MF_Wt )
+extra_processed = as.data.frame(sapply(extra, function(x) x/nrow(data_raw))*100, col.names=names(DataQuality))
+rownames(extra_processed) <- c("range/no average, Body length", "range/no average (sexes), Body length", "range/no average, Tail length", "range/no average (sexes), Tail length","range/no average, Weight", "range/no average (sexes), Weight")
+colnames(extra_processed) <- names(DataQuality)
+Data_Quality_complete <- rbind(DataQuality,extra_processed)
+
+write.csv  (Data_Quality_complete,"../Figures/value_percentages.csv")
+  
+```
+
+#Next, checking how closely mean and range midpoints correspond.
+
+```{r}
+
+#mean percentage of weight differences between known mean an inferred midpoing mean 
+MeanBl <- mean(abs( mean_range_data$Bl_mm-mean_range_data$range_mid_Bl)*100/mean_range_data$Bl_mm, na.rm = TRUE)
+MeanTl <- mean (abs( mean_range_data$Tl_mm-mean_range_data$range_mid_Tl)*100/mean_range_data$Tl_mm, na.rm = TRUE)
+MeanWt <- mean(abs( mean_range_data$Wt_g-mean_range_data$range_mid_Wt)*100/mean_range_data$Wt_g, na.rm = TRUE)
+
+pdf("../Figures/Supp1_Midpoint_dist.pdf")
+
+
+par(mfrow= c(1,3),oma = c(0, 0, 2, 0))
+
+hist(abs(mean_range_data$Bl_mm-mean_range_data$range_mid_Bl)*100/mean_range_data$Bl_mm, xlab = paste("Body length;", "mean",round(MeanBl, 2), "%",sep=" ") , main = "")
+hist(abs( mean_range_data$Tl_mm-mean_range_data$range_mid_Tl)*100/mean_range_data$Tl_mm,xlab = paste("Tail length;", "mean",round(MeanTl, 2),"%", sep=" "), main = "")
+hist(abs(mean_range_data$Wt_g-mean_range_data$range_mid_Wt)*100/mean_range_data$Wt_g, xlab = paste("Weight;", "mean",round(MeanWt, 2),"%", sep=" "), main = "")
+
+mtext("Absolute difference of range midpoint from species mean in %" , outer = TRUE, cex = 1)
+
+
+
+```
+
+
+#the data are not normally distributed, rather they are bimodal in all cases. All model fits will therefore consider if the model residuals are regularly distributed
+
+```{r}
+
+
+pdf("../Figures/Supp2_Frequency.pdf")
+
+par(mfrow= c(3,1))
+
+hist(data$Bl_mm, main="Frequency distribution of log Body length (mm)", xlab= "log Body length (mm)")
+hist(data$Tl_mm, main="Frequency distribution of log Tail length (mm)", xlab="log Tail length (mm) ")
+hist(data$Wt_g, main="Frequency distribution of log Body mass (g)", xlab="log Weight (g)" )
+
+dev.off()
+
+```
+
+#Is it appropriate to use species averages, rather than male/female data separately? Since in tail/body length or tail/weigth relationships are the basis for this study, confirming that there are no significant differences in slope or intercept between males- and females-only datasets
+
+
+```{r}
+#Re-arrange datasets to put males, femals and averages under each other, turning into a data frame for column names
+  
+  Males<-cbind(dataFull$Tl_Av_M,dataFull$Bl_Av_M,dataFull$Wt_Av_M, rep(1,length(dataFull$Tl_Av_M)))
+  Females<-cbind(dataFull$Tl_Av_F,dataFull$Bl_Av_F,dataFull$Wt_Av_F, rep(2,length(dataFull$Tl_Av_F)))
+  Averages<-cbind(dataFull$Tl_mm, dataFull$Bl_mm,dataFull$Wt_g, rep(3,length(dataFull$Bl_mm)))
+  
+  MarsCombine=rbind(Males, Females,Averages)
+  MarsCombine=as.data.frame(MarsCombine)
+  colnames(MarsCombine) <-c("Tl","Bl","Wt","Sex")
+  MarsCombine$Sex<-as.factor(MarsCombine$Sex)
+
+  
+#Are there differences in slope or intercept of Tail  and body length or weight according to sex, or averages between sexes? Using Anova from the car packages because this allows type III ANOVAs where the contribution of all other effect is adjusted for while computing each individual effect
+  
+  ## Body length:
+  
+    ###check model residuals before proceeding; some low-leverage outliers which are here accepted because they are roughly on the line
+    plot(lm(MarsCombine$Tl~MarsCombine$Bl*MarsCombine$Sex))
+    
+    ### Do regression slopes differ between sexes? 
+    Anova(lm(MarsCombine$Tl~MarsCombine$Bl*MarsCombine$Sex),type = 3)
+    
+    
+    ### No significant interactions, therefore dropping interactions to look for differences in intercept
+    Anova(lm(MarsCombine$Tl~MarsCombine$Bl+MarsCombine$Sex),type = 3)
+  
+    
+  ##Weight
+  
+    ###check model residuals before proceeding; no substantial outliers
+    plot(lm(MarsCombine$Tl~MarsCombine$Wt*MarsCombine$Sex))
+  
+    ### No regression slope differences between sexes; no intercept differences either (so smaller females also have commensurately smaller tails it seems, regardless of weight or body length)
+    Anova(lm(MarsCombine$Tl~MarsCombine$Wt*MarsCombine$Sex),type = 3)
+    
+    Anova(lm(MarsCombine$Tl~MarsCombine$Wt+MarsCombine$Sex),type = 3)
+  
+   
+```
+
+#Plot the male/female/average datasets over each other; note that there are a few more averages than male/female data so some "combined" datapoints are species where just averages are given.
+
+```{r}
+  
+#plot male-only, female-only, and averaged datasets together
+
+lwd=2
+pdf("../Figures/Supp4_MF_plot.pdf")
+par(mfrow=c(2,1))
+
+plot(data$Bl_Av_M,data$Tl_Av_M, col="red", pch=19, xlab="log Body length (mm)", ylab="log Tail length (mm)", bty="L");
+
+box(bty="L", lwd=2)
+
+points(data$Bl_Av_F,data$Tl_Av_F, col="blue", pch=19);
+points(data$Bl_mm,data$Tl_mm, col="cyan", pch=19);
+
+abline(lm(data$Tl_Av_M~data$Bl_Av_M), col="red",lwd=lwd);
+abline(lm(data$Tl_Av_F~data$Bl_Av_F), col="blue",lwd=lwd); 
+abline(lm(data$Tl_mm~data$Bl_mm), col="cyan", lwd=lwd);
+
+legend("bottomright",c("Male", "Female", "Combined") , pch=19, col=c("red","blue", "cyan"), cex=1, bty="n")
+
+plot(data$Wt_Av_M,data$Tl_Av_M, col="red", pch=19, xlab="log Weigth (g)", ylab="log Tail length (mm)", bty="L");
+
+box(bty="L", lwd=2)
+
+points(data$Wt_Av_F,data$Tl_Av_F, col="blue", pch=19);
+points(data$Wt_g,data$Tl_mm, col="cyan", pch=19);
+
+abline(lm(data$Tl_Av_M~data$Wt_Av_M), col="red",lwd=lwd);
+abline(lm(data$Tl_Av_F~data$Wt_Av_F), col="blue",lwd=lwd); 
+abline(lm(data$Tl_mm~data$Wt_g), col="cyan", lwd=lwd);
+
+legend("bottomright",c("Male", "Female", "Combined") , pch=19, col=c("red","blue", "cyan"), cex=1, bty="n")
+
+dev.off()
+
+```
+
+
+# Comparing ranges of all three variables; do tail and body length range differ?
+
+```{r}
+
+
+ ##return the min/max values to their un-logged form
+  ranges=as.data.frame(cbind(c(10^(data$Tl_max)/10^(data$Tl_min)),c(10^(data$Bl_max)/10^(data$Bl_min)),c(10^(data$Wt_max)/10^(data$Wt_min))))
+rownames(ranges) <-data$Species
+colnames(ranges) <- c("Tl_ratio", "Bl_ratio", "Wt_ratio")
+  
+  
+  mean(ranges$Tl_ratio, na.rm=TRUE)
+  mean(ranges$Bl_ratio, na.rm=TRUE)
+  mean(ranges$Wt_ratio, na.rm=TRUE)
+
+  
+ ##The VarDist.test code is in utilities. It runs a Kruskal-Wallis test and then a pairwise wilcoxon rank sum test on the ranges of BL and Tl (not Weight, which is on a different scale and thus expected to vary differently)
+  ForVarDist=c(ranges$Tl_ratio, ranges$Bl_ratio)
+  
+  MinMaxtest(ForVarDist,2)  
+  
+  ##Visualizing means of the ratios 
+
+lwd <- 2
+
+#pdf("../Figures/Fig1_Ranges.pdf")
+
+  boxplot(ranges$Tl_ratio, ranges$Bl_ratio,ranges$Wt_ratio, names=c("Tl ratio", "Bl ratio", "Wt ratio"), col=c("hotpink1","hotpink1","cadetblue2"), frame=F);
+  
+  box(bty="L", lwd=2)
+  
+arrows(x0=1,x1=2, y0=3, y1=3, length = 0.1, angle = 90, code=3, lwd=lwd );
+  
+  text(x=1.5, y=3.2, labels="p=0.57"); 
+  
+  text(x=1, y=0.9, labels=paste ("mean=",round( mean(ranges$Tl_ratio, na.rm=TRUE), digits=2), sep="" ));
+  text(x=2, y=0.9, labels=paste ("mean=",round( mean(ranges$Bl_ratio, na.rm=TRUE), digits=2), sep="" ));
+  text(x=3, y=0.9, labels=paste ("mean=",round( mean(ranges$Wt_ratio, na.rm=TRUE), digits=2), sep="" ))
+
+  dev.off()
+  
+  ##This is not  because of the extreme ranges in bandicoots!
+  
+  ranges_Band<-ranges[ - (which(data$Clade=="Peramelemorph")),]
+  
+  mean(ranges_Band$Tl_ratio, na.rm=TRUE)
+  mean(ranges_Band$Bl_ratio, na.rm=TRUE)
+  mean(ranges_Band$Wt_ratio, na.rm=TRUE)
+  
+  ForVarDist_Band=c(ranges_Band$Tl_ratio, ranges_Band$Bl_ratio)
+  
+  MinMaxtest(ForVarDist_Band,2)
+  
+pdf("../Figures/Supp5_Ranges.pdf") 
+ 
+boxplot(ranges_Band$Tl_ratio , ranges_Band$Bl_ratio,ranges_Band$Wt_ratio, names=c("Tl ratio", "Bl ratio", "Wt ratio"), xlab="Ratios without Peramelemorpha", col=c("hotpink1","hotpink1","cadetblue2"),frame=F);
+
+box(bty="L", lwd=2)
+      
+arrows(x0=1,x1=2, y0=3.5, y1=3.5, length = 0.1, angle = 90, code=3, lwd=lwd, ); text(x=1.5, y=3.7, labels="p=0.69")
+  text(x=1, y=0.9, labels=paste ("mean=",round( mean(ranges_Band$Tl_ratio, na.rm=TRUE), digits=2), sep="" ));
+  text(x=2, y=0.9, labels=paste ("mean=",round( mean(ranges_Band$Tl_ratio, na.rm=TRUE), digits=2), sep="" ));
+  text(x=3, y=0.9, labels=paste ("mean=",round( mean(ranges_Band$Tl_ratio, na.rm=TRUE), digits=2), sep="" ))
+
+dev.off()
+
+#Are arboreal and pentapedal species more constrained by their weight within species?
+
+  rangesArbPent<-ranges[ c (which (data$Locomotor_use == "Arboreal") , (which (data$Locomotor_use =="Pentapedal" ))),]
+  
+  rangesNonArbPent<-ranges[- c (which (data$Locomotor_use == "Arboreal") , (which (data$Locomotor_use =="Pentapedal" ))),]
+```
+
+# phylANOVA - do arboreal/pentapedal species have significantly lower ranges than others?
+
+```{r}
+  
+#Prepping range data for phylogenetic analysis - this sets up present range comparison and also range correlation analyses below
+
+#First, remove NAs
+rangesphy <- ranges[-c(which(is.na(ranges$Tl_ratio)), which (is.na(ranges$Bl_ratio)), which (is.na(ranges$Wt_ratio))),]
+
+#Then drop tips for which NAs are present
+namecheck=name.check(tree,rangesphy)
+treeranges=drop.tip(tree,namecheck$tree_not_data)
+name.check(treeranges,rangesphy)
+  
+# There seems to be no easy way of replacing a multi-level factor with a two-level factor, so doing it the long way here by making a new column
+
+ArbPent <- c(which (data$Locomotor_use=="Arboreal"), which (data$Locomotor_use=="Pentapedal"))
+Rest <- c(which (data$Locomotor_use=="Terrestrial"), which (data$Locomotor_use=="Saltatorial"), which (data$Locomotor_use=="Scansorial") )
+
+NewLoco <- rbind( cbind (ArbPent, rep(1, length(ArbPent)) ), cbind (Rest, rep(2, length(Rest)) ))
+NewLoco <- NewLoco[order( NewLoco[,1]),]
+
+ranges_ArbPent <- cbind(ranges, NewLoco[,2])
+ranges_ArbPent <- ranges_ArbPent[-c(which(is.na(ranges_ArbPent$Tl_ratio)), which (is.na(ranges_ArbPent$Bl_ratio)), which (is.na(ranges_ArbPent$Wt_ratio))),]
+
+#just checking that species labels line up
+name.check(treeranges,ranges_ArbPent)
+
+ phylANOVA(tree = treeranges,  ranges_ArbPent [,4], ranges_ArbPent$Tl_ratio, posthoc = FALSE )
+ phylANOVA(tree = treeranges,  ranges_ArbPent [,4], ranges_ArbPent$Bl_ratio, posthoc = FALSE )
+ phylANOVA(tree = treeranges,  ranges_ArbPent [,4], ranges_ArbPent$Wt_ratio, posthoc = FALSE )
+  
+ 
+#Also no significant differences in a non-phylogenetic context  (not reported in the manuscript)
+  
+  ratiosArbPent_Tl=c(rangesArbPent$Tl_ratio, rangesNonArbPent$Tl_ratio)
+  ratiosArbPent_Bl=c(rangesArbPent$Bl_ratio, rangesNonArbPent$Bl_ratio)
+  ratiosArbPent_Wt=c(rangesArbPent$Wt_ratio, rangesNonArbPent$Wt_ratio)
+  
+
+  
+  #no significant differences in tail ranges
+  MinMaxtest(ratiosArbPent_Tl,2)
+  #No sig. differences
+  MinMaxtest(ratiosArbPent_Bl,2)
+  #not significant
+  MinMaxtest(ratiosArbPent_Wt,2)
+
+```
+# Species with larger ranges of tail length tend to have larger ranges of body weight as well, but this correlation is stronger for body length than tail length (within the caveat of poor model fits!)
+
+```{r}   
+# Double-checking tip labels and data row names are in the same order
+
+name.check(treeranges,rangesphy)
+
+VarTlBl=find.best.model(Tl_ratio~Bl_ratio,treeranges,rangesphy);VarTlBl$AIC_Weights
+  #Checking appropriate distribution of model residuals. These are moderately linear
+  qqnorm (VarTlBl$Models$Pagel)      
+ VarTlBl$Model_summaries$Pagel$tTable
+ VarTlBl$Model_summaries$Pagel$coefficients
+ 
+ VarTlWt=find.best.model(Tl_ratio~Wt_ratio,treeranges,rangesphy);VarTlWt$AIC_Weights
+  #Checking appropriate distribution of model residuals. These are not very linear, so again cautious interpretation is required!
+  qqnorm (VarTlWt$Models$Pagel)      
+ VarTlWt$Model_summaries$Pagel$tTable
+ VarTlWt$Model_summaries$Pagel$coefficients
+ 
+ 
+ #compute relative probabilities betweeen 0 and 1 by comparing AICS according to Burnham and Anderson (2002)
+  AICs=c(VarTlBl$Model_summaries$Pagel$AIC,VarTlWt$Model_summaries$Pagel$AIC )
+  AICmin=AICs-min(AICs)
+  W=exp(-0.5*AICmin)/sum(exp(-0.5*AICmin))
+  
+  #The ranges of body length explain the ranges of tail length far better than weight ranges
+  W 
+ 
+  
+```
+
+
+#To understand the mode of evolution (Brownian, Ornstein-Uhlenbeck, or Early burst), we run the fit.continuous function from the phylo package. The data are z transformed only here because the objective of this test was to assess the possible caveats in the subsequent compare.evol.rates test, where weight and length rates will only be comparable if they are scaled to the same mean and standard deviation.
+
+```{r}
+
+#prepare the data (this is the required format for fitContinuous)
+bl <-data$Bl_mm
+tl <-data$Tl_mm
+w <- data$Wt_g
+ 
+
+names(bl) <-data$Species
+names(tl) <-data$Species
+names(w) <-data$Species
+
+
+
+#For Body mass 
+
+fitBM_bl<-fitContinuous((tree), scale(bl), model="BM")
+fitOU_bl<-fitContinuous((tree), scale(bl), model="OU")
+fitEB_bl<-fitContinuous((tree), scale(bl), model="EB")
+
+AICs=c(fitBM_bl$opt$aicc,fitOU_bl$opt$aicc,fitEB_bl$opt$aicc)
+AICmin=AICs-min(AICs)
+W=exp(-0.5*AICmin)/sum(exp(-0.5*AICmin))
+
+W_Bl=setNames(W, c("BM", "OU","EB"))
+W_Bl
+
+#for tail length
+fitBM_tl<-fitContinuous((tree), scale(tl), model="BM")
+fitOU_tl<-fitContinuous((tree), scale(tl), model="OU")
+fitEB_tl<-fitContinuous((tree), scale(tl), model="EB")
+
+AICs=c(fitBM_tl$opt$aicc,fitOU_tl$opt$aicc,fitEB_tl$opt$aicc)
+AICmin=AICs-min(AICs)
+W=exp(-0.5*AICmin)/sum(exp(-0.5*AICmin))
+
+W_Tl=setNames(W, c("BM", "OU","EB"))
+W_Tl
+
+#for weight
+
+fitBM_w<-fitContinuous((tree), scale(w), model="BM")
+fitOU_w<-fitContinuous((tree), scale(w), model="OU")
+fitEB_w<-fitContinuous((tree), scale(w), model="EB")
+
+
+AICs=c(fitBM_w$opt$aicc,fitOU_w$opt$aicc,fitEB_w$opt$aicc)
+AICmin=AICs-min(AICs)
+W=exp(-0.5*AICmin)/sum(exp(-0.5*AICmin))
+
+W_Wt=setNames(W, c("BM", "OU","EB"))
+W_Wt
+
+Evol_mode_table <- rbind(W_Tl,W_Bl,  W_Wt)
+rownames (Evol_mode_table) <- c("log Tail length","log Body length",  "log Body weight")
+
+
+
+```
+
+
+
+#Are there differences in phylogenetic signal and evolutionary rate between z-scores of the variables?
+
+```{r}
+# phylogenetic signal
+RateFrame <- as.data.frame(sapply(data[,2:4], scale));rownames(RateFrame)<-data$Species; colnames(RateFrame)<-c("Bl_mm", "Tl_mm", "Wt_g")
+matrix = c("Bl_mm", "Tl_mm", "Wt_g")
+
+
+phylosig(tree=tree, data$Bl_mm, method = "K" )
+phylosig(tree=tree, data$Tl_mm,method = "K" )
+phylosig(tree=tree, data$Wt_g,method = "K" )
+
+# evolutionary rates comparison
+
+rate_comp=compare.multi.evol.rates(A=RateFrame, gp=matrix, phy=(tree), Subset = FALSE, iter = 999, print.progress = FALSE)
+                           
+summary (rate_comp)
+
+
+
+plot(rate_comp)
+rate_comp$pairwise.pvalue
+rate_comp$sigma.d.gp.ratio
+                                                                    
+
+```
+ 
+# Do tail length and body length scale similarly with body weight? The find.best.model code finds the best fitting tree branch and phylogenetic correlation matrix for each model and allows to run an anova on just that. For code, see utilities.
+
+```{r}
+ 
+  ##Tail vs body weight
+  TW=find.best.model(Tl_mm~Wt_g,tree,data);TW$AIC_Weights
+  #Checking appropriate distribution of model residuals
+  qqnorm (TW$Models$Brownian)
+  TW$Model_summaries$Brownian$tTable  
+  
+  
+  ##Body length vs body weight
+  BW=find.best.model(Bl_mm~Wt_g,tree,data);BW$AIC_Weights
+  #Checking appropriate distribution of model residuals
+  qqnorm (BW$Models$Brownian)
+  BW$Model_summaries$Brownian$tTable  
+  
+  ##Tail vs. body length
+  TB=find.best.model(Tl_mm~Bl_mm,tree,data);TB$AIC_Weights
+  #Checking appropriate distribution of model residuals   
+  qqnorm (TB$Models$Brownian)      
+  TB$Model_summaries$Brownian$tTable
+
+  #compute relative probabilities betweeen 0 and 100 by comparing AICS according to Burnham and Anderson
+  AICs=c(TB$Model_summaries$Brownian$AIC,TW$Model_summaries$Brownian$AIC )
+  AICmin=AICs-min(AICs)
+  W=exp(-0.5*AICmin)/sum(exp(-0.5*AICmin))
+  
+  #Body length is a far better predictor of tail length:
+  W 
+  
+```
+
+# Weight remains a significant predictor of tail length even when correcting for body mass, but with lower level of significance and lower effect size.
+
+```{r}
+      
+      TBW=find.best.model(Tl_mm~Bl_mm*Wt_g,tree,data);TBW$AIC_Weights
+      #Checking appropriate distribution of model residuals
+      qqnorm (TBW$Models$Brownian)
+      anova(TBW$Models$Brownian, type="marginal")
+      
+      ##dropping the interaction;  
+      
+      TBWNoInter=gls(Tl_mm~Bl_mm+Wt_g, correlation=corBrownian(1,phy=tree), data=data)
+      #Checking appropriate distribution of model residuals; some low-leverage outliers deemed acceptable in this context
+      #qqnorm (TBWNoInter$Models$Brownian)
+      anova( TBWNoInter, type="marginal")
+      
+      TBWNoInter$coefficients
+
+      
+```
+
+# Aside from the association between body length and tail length,does locomotor mode play a role? It does, with significant interaction terms 
+
+```{r}
+
+#There are strong interactions between locomotor mode and Body length
+
+TB=find.best.model(Tl_mm~Bl_mm*Locomotor_use,tree,data);TB$AIC_Weights
+
+#check if the residuals of the model are OK; the fit is quite good
+#qqnorm (TB$Models$Brownian)
+
+###look at the model summary of the most likely model: there are significant interactions 
+anova(TB$Models$Brownian)
+
+
+# same for body weight
+
+#The relationship of tail length and locomotor use changes at different weights
+
+TW=find.best.model(Tl_mm~Wt_g*Locomotor_use,tree,data);TW$AIC_Weights
+
+#check if the residuals of the model are OK; the fit is quite good
+qqnorm (TW$Models$Brownian)
+
+###look at the model summary of the most likely model: there are also significant interactions here
+anova(TW$Models$Brownian, type="marginal")
+
+
+
+```
+
+#In the plot of tail length against body length, Peremelemorphs and the genus _Macropus_ are suggestive of different intercept and slope, respectively. Checking if the significant interaction is driven by these two
+
+```{r}
+
+#Removing peramelemorphs by classifier and Macropus species from looking at the first and last Macropus in the dataset
+
+NoPerams_Roos=data[-c(which(data$Clade =="Peramelemorph"), which(data$Species=="Macropus_robustus"):which (data$Species=="Macropus_giganteus")), ]
+
+NoPerams_RoosTree=drop.tip(tree, name.check(tree,NoPerams_Roos)$tree_not_data )
+
+length(NoPerams_RoosTree$tip.label)
+length(NoPerams_Roos$Species)
+
+
+#Testing without interactions
+TBNPR=find.best.model(Tl_mm~Bl_mm*Locomotor_use,NoPerams_RoosTree,NoPerams_Roos);TBNPR$AIC_Weights
+
+#qqplot OK
+#qqnorm (TBNAPNoInter$Models$Brownian)
+
+#Still a significant interaction between locomotor uses
+anova(TBNPR$Models$Brownian, type="marginal")
+
+
+```
+
+#Since the two most different groups (Peramelemorphs and Macropus) do not change the significance  of body length and locomotor use interaction, running a post-hoc analysis on the entire dataset. It is not possible to do post-hoc test in the pgls framework, so instead looking for interactions in the non-phylogenetically corrected lm analysis and using a permutation-based interaction test using the pairwise function of the RRPP package. 
+
+```{r}
+
+
+#RRPP requires an rrpp data frame
+interaction_frame <- rrpp.data.frame(tail=data$Tl_mm,body=data$Bl_mm, weight=data$Wt_g,  loco=data$Locomotor_use)
+
+#For Tail ~ body lengths
+
+lm_inter_bl<-lm.rrpp(tail~body*loco,SS.type = c("I"),data=interaction_frame)
+
+Interactions_bl <- pairwise(lm_inter,covariate=interaction_frame$body,groups=interaction_frame$loco)
+
+summary(Interactions_bl, test.type="dist")
+
+
+#For Tail ~ body weights
+
+
+lm_inter_wt<-lm.rrpp(tail~weight*loco,SS.type = c("I"),data=interaction_frame)
+
+Interactions_wt <- pairwise(lm_inter,covariate=interaction_frame$weight,groups=interaction_frame$loco)
+
+summary(Interactions_wt, test.type="dist")
+
+
+```
+
+
+#Despite the use of pgls, locomotor modes and orders/diprotodontian families are highly confounded. The possibility that these specific phylogenetic levels make a difference is excluded by analysing a model that uses phylogenetic distinctions these. This does not reveal significant interactions between major clade (order or diprotodontian family):
+
+```{r}
+
+TB=find.best.model(Tl_mm~Bl_mm*Clade,tree,data);TB$AIC_Weights
+
+#check if the residuals of the model are OK; the fit is quite good
+#qqnorm (TB$Models$Brownian)
+
+###look at the model summary of the most likely model: there are no significant interactions 
+anova(TB$Models$Brownian)
+
+
+TBNoInter=find.best.model(Tl_mm~Bl_mm+Clade,tree,data);TB$AIC_Weights
+anova(TBNoInter$Models$Brownian)
+
+
+# The same for body weight:
+
+TW=find.best.model(Tl_mm~Wt_g*Clade,tree,data);TW$AIC_Weights
+
+#check if the residuals of the model are OK; the fit is quite good here, too
+#qqnorm (TW$Models$Brownian)
+
+###look at the model summary of the most likely model: there are no significant interactions 
+anova(TW$Models$Brownian)
+
+
+TWNoInter=find.best.model(Tl_mm~Wt_g+Clade,tree,data);TW$AIC_Weights
+anova(TWNoInter$Models$Brownian)
+
+
+
+
+```
+
+#To look for differences in means, which may also contribute to differences in relative tail length between locomotor modes, we separate the dataset to test only intercept means in those locomotor modes that show no significant interaction in the analyses above. This gives an indication of intercept differences in a phylogenetic context. Note, however, that the confidence of significances in such a carved-up dataset is not very high.
+
+```{r}
+
+#Prepare trees
+
+#For body length, only arboreal, pentapedal, and scansorial locomotor modes did not show significant interactions; so testing means
+
+ArbPentScan=data[-c(which(data$Locomotor_use =="Terrestrial"), which ( data$Locomotor_use =="Scansorial"), which(data$Locomotor_use =="Saltatorial")),]
+ArbPentScanTree=drop.tip(tree, name.check(tree,ArbPentScan)$tree_not_data )
+
+
+#For body weight, we also need to compare pentapedal and terrestrial means
+
+PentTerr=data[c( which ( data$Locomotor_use =="Pentapedal"), which(data$Locomotor_use =="Terrestrial")),]
+PentTerrTree=drop.tip(tree, name.check(tree,PentTerr)$tree_not_data )
+
+
+
+#Finding the  models for testing slope differences, then testing using the find.best.model function as above; none of these are significant
+
+ArbPentScanModel_Bl <- find.best.model(Tl_mm~Bl_mm+Locomotor_use,ArbPentScanTree,ArbPentScan);ArbPentScanModel$AIC_Weights
+anova(ArbPentScanModel_Bl$Models$Grafen, type="marginal")
+
+ArbPentScanModel_Wt <- find.best.model(Tl_mm~Wt_g+Locomotor_use,ArbPentScanTree,ArbPentScan);ArbPentScanModel$AIC_Weights
+anova(ArbPentScanModel_Wt$Models$Grafen, type="marginal")
+
+PentTerrModel_Wt <- find.best.model(Tl_mm~Wt_g+Locomotor_use,PentTerrTree,PentTerr);PentTerrModel_Wt$AIC_Weights
+anova(PentTerrModel_Wt$Models$Pagel, type="marginal")
+
+
+```
+
+#Plotting according to tail use, locomotor mode, and phylogeny; setting up line code, colours, etc.
+
+```{r}
+
+#determine the regression line coefficients from a pgls analyses for each locomotor group, with separate lines for the locomotor modes. 
+
+Arb=data[c(which(data$Locomotor_use =="Arboreal")),]
+Arb_Tree=drop.tip(tree, name.check(tree,Arb)$tree_not_data )
+
+Pent=data[c(which(data$Locomotor_use =="Pentapedal")),]
+Pent_Tree=drop.tip(tree, name.check(tree,Pent)$tree_not_data )
+
+Scan=data[c(which(data$Locomotor_use =="Scansorial")),]
+Scan_Tree=drop.tip(tree, name.check(tree,Scan)$tree_not_data )
+
+Salt=data[c(which(data$Locomotor_use =="Saltatorial")),]
+Salt_Tree=drop.tip(tree, name.check(tree,Salt)$tree_not_data )
+
+Terr=data[c(which(data$Locomotor_use =="Terrestrial")),]
+Terr_Tree=drop.tip(tree, name.check(tree,Terr)$tree_not_data )
+
+
+#Then use the pgls.line.text function in utilities to generate the code for the lines
+ ##For body length:
+
+  Arbline_Bl_F <-gls(Tl_mm~Bl_mm, correlation=corBrownian (1,phy=Arb_Tree), data=Arb)
+  Arbline_Bl <- pgls.line.text(Arbline_Bl_F$coefficients[1],Arbline_Bl_F$coefficients[2], 1.8,2.7)
+  
+  Pentline_Bl_F <-gls(Tl_mm~Bl_mm, correlation=corBrownian (1,phy=Pent_Tree), data=Pent)
+  Pentline_Bl <- pgls.line.text(Pentline_Bl_F$coefficients[1],Pentline_Bl_F$coefficients[2], 2.6,3.2)
+  
+  Saltline_Bl_F <-gls(Tl_mm~Bl_mm, correlation=corBrownian (1,phy=Salt_Tree), data=Salt)
+  Saltline_Bl <- pgls.line.text(Saltline_Bl_F$coefficients[1],Saltline_Bl_F$coefficients[2], 2.3,2.83)
+  
+  Scanline_Bl_F <-gls(Tl_mm~Bl_mm, correlation=corBrownian (1,phy=Scan_Tree), data=Scan)
+  Scanline_Bl <- pgls.line.text(Scanline_Bl_F$coefficients[1],Scanline_Bl_F$coefficients[2], 1.9,2.7)
+  
+  Terrline_Bl_F <-gls(Tl_mm~Bl_mm, correlation=corBrownian (1,phy=Terr_Tree), data=Terr)
+  Terrline_Bl <- pgls.line.text(Terrline_Bl_F$coefficients[1],Terrline_Bl_F$coefficients[2], 1.7,3.1)
+
+  #for weight
+  
+  Arbline_Wt_F <-gls(Tl_mm~Wt_g, correlation=corBrownian (1,phy=Arb_Tree), data=Arb)
+  Arbline_Wt <- pgls.line.text(Arbline_Wt_F$coefficients[1],Arbline_Wt_F$coefficients[2], 0.9,3.7)
+  
+  Pentline_Wt_F <-gls(Tl_mm~Wt_g, correlation=corBrownian (1,phy=Pent_Tree), data=Pent)
+  Pentline_Wt <- pgls.line.text(Pentline_Wt_F$coefficients[1],Pentline_Wt_F$coefficients[2], 3.6,4.6)
+  
+  Saltline_Wt_F <-gls(Tl_mm~Wt_g, correlation=corBrownian (1,phy=Salt_Tree), data=Salt)
+  Saltline_Wt <- pgls.line.text(Saltline_Wt_F$coefficients[1],Saltline_Wt_F$coefficients[2], 2.7,4)
+  
+  Scanline_Wt_F <-gls(Tl_mm~Wt_g, correlation=corBrownian (1,phy=Scan_Tree), data=Scan)
+  Scanline_Wt <- pgls.line.text(Scanline_Wt_F$coefficients[1],Scanline_Wt_F$coefficients[2], 1.2,3.4)
+  
+  Terrline_Wt_F <-gls(Tl_mm~Wt_g, correlation=corBrownian (1,phy=Terr_Tree), data=Terr)
+  Terrline_Wt <- pgls.line.text(Terrline_Wt_F$coefficients[1],Terrline_Wt_F$coefficients[2], 0.6, 4.5)
+  
+
+# initial setup: colours and margins
+  #colsOrderM=brewer.pal(n=2+length(levels(data$Clade)), name="Paired")
+  colsLoco=brewer.pal(n=3+length(levels(data$Locomotor_use)), name="Dark2")
+  colsLoco=c("dark orange", "purple", "green", "red", "blue")
+  pchs=c(8,11,19,17,20,15)
+  ##Size of points
+  cexes <- 1
+  ## this adjusts the titles of the double panel
+  adjs <- -0.3
+  ## spaces to the left of text
+  xinter <- 0.5
+  ## spaces between legend lines
+  yInter <- 0.9
+  ##size of the box is determined by text width
+  textwidth <- 0.2
+
+
+pdf("../Figures/Fig2_Tl_Bl_lines.pdf", height = 6, width = 7)
+
+plot(data$Tl_mm~data$Bl_mm, col=colsLoco[data$Locomotor_use], pch = pchs[data$Clade], xlab="log Body length (mm)", ylab="log Tail length",asp=1 ,bty="L"); 
+
+box(bty="L",lwd=2) 
+
+legend("bottomright",inset=0.1,levels(data$Locomotor_use) , pch=19, col=colsLoco, cex=cexes, x.intersp = xinter, y.intersp = yInter+0.2, text.width = textwidth, bty="n" );  
+
+legend("topleft", "A", bty="n", cex=1.5, inset=-0.05);
+
+lines(x=c(1.8,2.7),y=c(1.8776347281739,2.67921326346783),col=colsLoco[1], lwd=2)
+lines(x=c(2.6,3.2),y=c(2.60573488742311,2.93380010371888),col=colsLoco[2], lwd=2)
+lines(x=c(2.3,2.83),y=c(2.12835900403023,2.8139649267985), col=colsLoco[3], lwd=2)
+lines(x=c(1.9,2.7),y=c(1.9958300045442,2.62692913039759), col=colsLoco[4], lwd=2)
+lines(x=c(1.7,3.1),y=c(1.66433210725893,2.63480806919339), col=colsLoco[5], lwd=2)
+#If species names are desired: text(data$Tl_mm~data$Bl_mm, labels=data$Species, cex=0.5)
+
+
+plot(data$Tl_mm~data$Wt_g, col=colsLoco[data$Locomotor_use], pch = pchs[data$Clade], xlab="log Weight (g)", ylab="log Tail length" , asp=1,bty="L");
+
+box(bty="L",lwd=2)
+
+legend("bottomright",inset=0.15,levels(data$Clade) , pch=pchs,  cex=cexes,x.intersp = xinter, y.intersp = yInter, text.width = textwidth, bty="n" );
+
+legend("topleft", "B", bty="n", cex=1.5,inset=-0.05);
+
+lines(x=c(0.9,3.7),y=c(1.88268754185602,2.71799513332411), col=colsLoco[1], lwd=2)
+lines(x=c(3.6,4.6),y=c(2.61375492837646,2.92719940106734), col=colsLoco[2], lwd=2)
+lines(x=c(2.7,4),y=c(2.2596532115985,2.8099730946047), col=colsLoco[3], lwd=2)
+lines(x=c(1.2,3.4),y=c(2.01091510547401,2.61107885348291), col=colsLoco[4], lwd=2)
+lines(x=c(0.6,4.5),y=c(1.72181183623882,2.53888038204326), col=colsLoco[5], lwd=2)
+
+
+dev.off()
+ 
+
+
+
+```
+ 
+#A plot that includes ranges as ellipses using the DescTools package for ellipses and scale package for transparency setting
+ 
+```{r}
+#Extract data ranges
+
+data_ranges_Bl <- data[-c(which(is.na(data$Tl_min)), which (is.na(data$Bl_min))),]
+data_ranges_Wt <- data[-c(which(is.na(data$Tl_min)), which (is.na(data$Wt_min))),]
+
+#make lwd number so black frames around lines can happen
+lwd_bl=3
+
+
+pdf("../Figures/Fig3_ranges.pdf", height = 6, width = 7)
+#Tail vs body length: 
+
+
+plot(data_ranges_Bl$Tl_mm~data_ranges_Bl$Bl_mm, col=colsLoco[data$Locomotor_use], pch = pchs[data$Clade], xlab="log Body length (mm)", ylab="log Tail length" , xlim=c(1.6,3.5), ylim=c(1.5,3.3) , asp=1,bty="n"); 
+
+box(bty="L",lwd=2)
+
+DrawEllipse(x=data_ranges_Bl$Bl_mm, y=data_ranges_Bl$Tl_mm, radius.x = (data_ranges_Bl$Bl_max - data_ranges_Bl$Bl_min), radius.y = (data_ranges_Bl$Tl_max - data_ranges_Bl$Tl_min), col=alpha (colsLoco[data$Locomotor_use] , 0.05), border=colsLoco[data$Locomotor_use]);
+
+points(data_ranges_Bl$Tl_mm~data_ranges_Bl$Bl_mm, col="black", pch = pchs[data$Clade]);
+
+legend("bottomright",inset=0.15,levels(data$Locomotor_use) , pch=19, col=colsLoco, cex=cexes, x.intersp = xinter, y.intersp = yInter+0.1, text.width = textwidth, bty="n");  
+
+legend("topleft", "A", bty="n", cex=1.5)
+
+#first draw wider lines to give a black "frame"
+
+lines(x=c(1.8,2.7),y=c(1.8776347281739,2.67921326346783),col="Black", lwd=lwd_bl)
+lines(x=c(2.6,3.2),y=c(2.60573488742311,2.93380010371888),col="Black", lwd=lwd_bl)
+lines(x=c(2.3,2.83),y=c(2.12835900403023,2.81396492679852), col="Black", lwd=lwd_bl)
+lines(x=c(1.9,2.7),y=c(1.99094065810105,2.62786824555291), col="Black", lwd=lwd_bl)
+lines(x=c(1.7,3.1),y=c(1.64141993621454,2.66363472373482), col="Black", lwd=lwd_bl)
+
+#then the coloured lines for filling in
+lines(x=c(1.8,2.7),y=c(1.8776347281739,2.67921326346783),col=colsLoco[1], lwd=lwd_bl-1)
+lines(x=c(2.6,3.2),y=c(2.60573488742311,2.93380010371888),col=colsLoco[2], lwd=lwd_bl-1)
+lines(x=c(2.3,2.83),y=c(2.12835900403023,2.8139649267985), col=colsLoco[3], lwd=lwd_bl-1)
+lines(x=c(1.9,2.7),y=c(1.99094065810105,2.62786824555291), col=colsLoco[4], lwd=lwd_bl-1)
+lines(x=c(1.7,3.1),y=c(1.64141993621454,2.66363472373482), col=colsLoco[5], lwd=lwd_bl-1)
+
+#Tail vs body weight:
+
+
+plot(data_ranges_Wt$Tl_mm~data_ranges_Wt$Wt_g, col=colsLoco[data$Locomotor_use], pch = pchs[data$Clade], xlab="log Weight (g)", ylab="log Tail length" , xlim=c(0.3,5.3), ylim=c(1.2,3.3), asp=1,bty="n" ); 
+
+box(bty="L",lwd=2)
+
+DrawEllipse(x=data_ranges_Wt$Wt_g, y=data_ranges_Wt$Tl_mm, radius.x = (data_ranges_Wt$Wt_max - data_ranges_Wt$Wt_min), radius.y = (data_ranges_Wt$Tl_max - data_ranges_Wt$Tl_min), col=alpha (colsLoco[data$Locomotor_use] , 0.05), border=colsLoco[data$Locomotor_use]);
+
+points(data_ranges_Wt$Tl_mm~data_ranges_Wt$Wt_g, col="black", pch = pchs[data$Clade]);
+
+legend("bottomright",inset=0.16,levels(data$Clade) , pch=pchs,  cex=cexes,x.intersp = xinter, y.intersp = yInter, text.width = textwidth, bty="n" );
+
+legend("topleft", "B", bty="n", cex=1.5,)
+
+#first draw wider lines to give a black "frame"
+lines(x=c(0.9,3.7),y=c(1.88268754185602,2.71799513332411), col="Black", lwd=lwd_bl)
+lines(x=c(3.6,4.6),y=c(2.61375492837646,2.92719940106734), col="Black", lwd=lwd_bl)
+lines(x=c(2.7,4),y=c(2.2596532115985,2.8099730946047), col="Black", lwd=lwd_bl)
+lines(x=c(1.2,3.4),y=c(2.00997499587214,2.60906055556869), col="Black", lwd=lwd_bl)
+lines(x=c(0.6,4.5),y=c(1.69836821022779,2.56642013396235), col="Black", lwd=lwd_bl)
+
+#then the coloured lines for filling in
+
+lines(x=c(0.9,3.7),y=c(1.88268754185602,2.71799513332411), col=colsLoco[1], lwd=lwd_bl-1)
+lines(x=c(3.6,4.6),y=c(2.61375492837646,2.92719940106734), col=colsLoco[2], lwd=lwd_bl-1)
+lines(x=c(2.7,4),y=c(2.2596532115985,2.8099730946047), col=colsLoco[3], lwd=lwd_bl-1)
+lines(x=c(1.2,3.4),y=c(2.00997499587214,2.60906055556869), col=colsLoco[4], lwd=lwd_bl-1)
+lines(x=c(0.6,4.5),y=c(1.69836821022779,2.56642013396235), col=colsLoco[5], lwd=lwd_bl-1)
+
+dev.off()
+
+```
+ 
+ 
+#Plotting the tree; this is here because that is where the colour schemes are set up above.
+
+```{r}
+
+pdf("../Figures/Supp3_phylog.pdf", height = 11, width = 6)
+
+plot(tree, type="phylogram", cex=0.5, tip.color = colsLoco[data$Locomotor_use]); legend("right",inset=0.1,levels(data$Locomotor_use) , pch=19, col=colsLoco, cex=0.5, x.intersp = 0.9, y.intersp = 0.9, text.width = textwidth, ,bty="n");
+
+```
+
+
+#In case it is of interest (but not reported in the manuscript), below is the scatterplot with conventional linear models - just showing that the lm slopes do not look all that different to the pgls coefficents
+
+```{r}
+
+#First, a plot to show that the below does not match my expectation
+
+plot(data$Tl_mm~data$Bl_mm, col=colsLoco[data$Locomotor_use], pch=19,xlab="log Body length (mm)", ylab="log Tail length",asp=1 ,bty="L");
+abline(lm (Terr$Tl_mm~Terr$Bl_mm), col=colsLoco[5]);
+abline(lm (Scan$Tl_mm~Scan$Bl_mm), col=colsLoco[4]);
+abline(lm (Salt$Tl_mm~Salt$Bl_mm), col=colsLoco[3]);
+abline(lm (Pent$Tl_mm~Pent$Bl_mm), col=colsLoco[2]);
+abline(lm (Arb$Tl_mm~Arb$Bl_mm), col=colsLoco[1]);
+
+legend("bottomright",inset=0.15,levels(data$Locomotor_use) , pch=19, col=colsLoco, cex=cexes, x.intersp = xinter, y.intersp = yInter+0.1, text.width = textwidth, bty="n")
+
+
+```
+
+
+```
+ 
