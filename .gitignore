@@ -1,3 +1,7 @@
 .rdata
 *.pdf
 .indd
+*.stl
+*.ply
+
+*.pptx
